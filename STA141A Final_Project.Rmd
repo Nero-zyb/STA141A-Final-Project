@@ -1,0 +1,577 @@
+# Title
+“Decoding the Brain: Linking Neural Signals to Behavioral Feedback”
+
+# Abstract
+In this project report, I use the data set with 18 sessions. I divide this report into six sections. In the data integration section, I combined data from 18 sessions. Then, in the model training section, I choose the second logistic regression model as the test model since the AUC of model 2 is larger than which of model 1. SO I will implement the test data into the second model to do the predictive test in the end. 
+
+# Section 1 Introduction
+In this project, I want to build a predictive model to identify outcomes from each trial. The data set I used is a subset of data collected by Steinmetz et al. (2019) There are 18 sessions in this sub-data set. In order to know the data set, the first thing I need to do is the exploratory data analysis. In this section, I need to describe the whole structure of the data. Then I would assess the difference in a single trial or session. Second, I would do a data integration. By doing so I can tell the association across different trials or sessions. The last part of this project is the Model Training and the Prediction. In this section, I need to choose a model which is good fit to the data set and use the model to perform the test on other data set besides the 18 sessions.   
+
+# Section 2 Exploratory analysis
+```{r echo=TRUE, eval=TRUE, message=FALSE}
+suppressWarnings(library(tidyverse))
+suppressWarnings(library(knitr))
+suppressWarnings(library(dplyr))
+library(caret) 
+library(ROCR)
+```
+
+```{r echo=TRUE, eval=TRUE}
+# Load the data 
+session=list()
+for(i in 1:18){
+  session[[1]]=readRDS("C:/Users/28362/Downloads/sessions/session1.rds")
+  session[[2]]=readRDS("C:/Users/28362/Downloads/sessions/session2.rds")
+  session[[3]]=readRDS("C:/Users/28362/Downloads/sessions/session3.rds")
+  session[[4]]=readRDS("C:/Users/28362/Downloads/sessions/session4.rds")
+  session[[5]]=readRDS("C:/Users/28362/Downloads/sessions/session5.rds")
+  session[[6]]=readRDS("C:/Users/28362/Downloads/sessions/session6.rds")
+  session[[7]]=readRDS("C:/Users/28362/Downloads/sessions/session7.rds")
+  session[[8]]=readRDS("C:/Users/28362/Downloads/sessions/session8.rds")
+  session[[9]]=readRDS("C:/Users/28362/Downloads/sessions/session9.rds")
+  session[[10]]=readRDS("C:/Users/28362/Downloads/sessions/session10.rds")
+  session[[11]]=readRDS("C:/Users/28362/Downloads/sessions/session11.rds")
+  session[[12]]=readRDS("C:/Users/28362/Downloads/sessions/session12.rds")
+  session[[13]]=readRDS("C:/Users/28362/Downloads/sessions/session13.rds")
+  session[[14]]=readRDS("C:/Users/28362/Downloads/sessions/session14.rds")
+  session[[15]]=readRDS("C:/Users/28362/Downloads/sessions/session15.rds")
+  session[[16]]=readRDS("C:/Users/28362/Downloads/sessions/session16.rds")
+  session[[17]]=readRDS("C:/Users/28362/Downloads/sessions/session17.rds")
+  session[[18]]=readRDS("C:/Users/28362/Downloads/sessions/session18.rds")
+}
+# Here I create an empty list called 'session' to store data for multiple sessions.
+# I use a list because each session can be treated as a separate data set, and storing them in a list allows for easy iteration or merging later on.
+```
+
+```{r echo=TRUE, eval=TRUE}
+n.session=length(session)
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+  }
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+```
+The table summarizes the essential data structures across sessions.
+
+```{r}
+#calculates the average spike count per brain area for a specific trial within a selected session.
+i.s=2
+i.t=1 
+spk.trial = session[[i.s]]$spks[[i.t]]
+area=session[[i.s]]$brain_area
+spk.count=apply(spk.trial,1,sum)
+spk.average.tapply=tapply(spk.count, area, mean)
+tmp <- data.frame(
+  area = area,
+  spikes = spk.count
+)
+spk.average.dplyr =tmp %>%
+  group_by(area) %>%
+  summarize(mean= mean(spikes))
+```
+
+```{r} 
+#calculates the average spike count per brain area for a given trial in a session.The average spike count per brain area could be used as an input feature in a predictive model.
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+  }
+average_spike_area(1,this_session = session[[i.s]])
+```
+
+```{r}
+#This R code constructs a trial-level summary data set for a given session, capturing neural activity per brain area along with task-related variables (feedback type and stimulus contrast levels).
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,this_session = session[[i.s]]),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.s],
+                        i.t)
+}
+colnames(trial.summary)=c(names(average_spike_area(i.t,this_session = session[[i.s]])), 'feedback', 'left contr.','right contr.','id' )
+trial.summary <- as_tibble(trial.summary)
+```
+
+```{r}
+area.col=rainbow(n=n.area,alpha=0.7)
+plot(x=1,y=0, col='white',xlim=c(0,n.trial),ylim=c(0.5,2.2), xlab="Trials",ylab="Average spike counts", main=paste("Spikes per area in Session", i.s))
+for(i in 1:n.area){
+  lines(y=trial.summary[[i]],x=trial.summary$id,col=area.col[i],lty=2,lwd=1)
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+  }
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+```
+This plot represents the average spike counts per brain area across each trials in session 2. The x-axis represents trial number, while the y-axis represents average spike count. Each line in the plot is a different brain area (CA1, POST, root, VISl, VISpm).
+1.The root area (green line) exhibits the lowest overall spike rate.
+2.The VISpm area (purple line) shows consistently higher spike rates.
+3.The CA1 and POST areas (red line & blue line) fluctuate more across trials.
+4.This suggests that different brain areas contribute differently to the task.
+
+```{r}
+#visualizes spike activity across neurons in a single trial, showing when each neuron fired during the trial.
+plot.trial<-function(i.t,area, area.col,this_session){
+    
+    spks=this_session$spks[[i.t]];
+    n.neuron=dim(spks)[1]
+    time.points=this_session$time[[i.t]]
+    
+    plot(0,0,xlim=c(min(time.points),max(time.points)),ylim=c(0,n.neuron+1),col='white', xlab='Time (s)',yaxt='n', ylab='Neuron', main=paste('Trial ',i.t, 'feedback', this_session$feedback_type[i.t] ),cex.lab=1.5)
+    for(i in 1:n.neuron){
+        i.a=which(area== this_session$brain_area[i]);
+        col.this=area.col[i.a]
+        
+        ids.spike=which(spks[i,]>0) # find out when there are spikes 
+        if( length(ids.spike)>0 ){
+            points(x=time.points[ids.spike],y=rep(i, length(ids.spike) ),pch='.',cex=2, col=col.this)
+        }
+      
+            
+    }
+    
+legend("topright", 
+  legend = area, 
+  col = area.col, 
+  pch = 16, 
+  cex = 0.8
+  )
+  }
+```
+
+```{r, fig.width=8, fig.height=8}
+varname=names(trial.summary);
+area=varname[1:(length(varname)-4)]
+plot.trial(1,area, area.col,session[[i.s]])
+```
+This plot represents the neural spiking activity for Trial 1 with incorrect response. And each of the dot represents a spike event. The y-axis represents the neurons; and the x-axis represents the spike time.
+
+```{r, fig.width=8, fig.height=8}
+varname=names(trial.summary);
+area=varname[1:(length(varname)-4)]
+par(mfrow=c(1,2))
+plot.trial(1,area, area.col,session[[i.s]])
+plot.trial(2,area, area.col,session[[i.s]])
+
+par(mfrow=c(1,1))
+```
+This figure compares neural spiking activity for two trials: 
+Left panel: Trial 1, feedback = -1
+Right panel: Trial 2, feedback = 1 
+The general spike density appears similar between the two trials. However, there are some differences in firing timing and clustering across neurons.
+
+# Section 3 Data integration
+```{r}
+session <- list.files(path = "C:\\Users\\28362\\Downloads\\sessions", pattern = "session\\d+\\.rds", full.names = TRUE)
+all_sessions <- lapply(session, readRDS)
+all_data <- list()
+for (i in seq_along(all_sessions)) {
+  session <- all_sessions[[i]]
+  if (!all(c("contrast_left", "contrast_right", "feedback_type", "mouse_name", "spks") %in% names(session))) {
+    next  
+  }
+  contrast_difference <- session$contrast_left - session$contrast_right
+  avg_spike_rate <- sapply(session$spks, function(spk) ifelse(is.null(spk), NA, mean(spk, na.rm = TRUE)))
+  session_df <- data.frame(
+    session_num = i,  
+    mouse_name = session$mouse_name,
+    contrast_difference = contrast_difference,
+    feedback_type = session$feedback_type,
+    avg_spike_rate = avg_spike_rate
+  )
+  
+  all_data[[i]] <- session_df  
+}
+final_dataset <- bind_rows(all_data)
+final_dataset <- na.omit(final_dataset)
+final_dataset$session_num <- as.factor(final_dataset$session_num)
+final_dataset$mouse_name <- as.factor(final_dataset$mouse_name)
+str(final_dataset)
+head(final_dataset)
+```
+```{r}
+library(DT)
+datatable(final_dataset, options = list(pageLength = 10, autoWidth = TRUE), 
+          caption = "Table: Summary of Final Dataset")
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+session <- list.files(path = "C:\\Users\\28362\\Downloads\\sessions", pattern = "session\\d+\\.rds", full.names = TRUE)
+all_sessions <- lapply(session, readRDS)
+all_data <- list()
+for (i in seq_along(all_sessions)) {
+  session <- all_sessions[[i]]
+  if (!all(c("contrast_left", "contrast_right", "feedback_type", "mouse_name", "spks") %in% names(session))) {
+    next
+  }
+  contrast_difference <- session$contrast_left - session$contrast_right
+  avg_spike_rate <- sapply(session$spks, function(spk) ifelse(is.null(spk), NA, mean(spk, na.rm = TRUE)))
+  session_df <- data.frame(
+    session_num = i,
+    mouse_name = session$mouse_name,
+    contrast_difference = contrast_difference,
+    feedback_type = session$feedback_type,
+    avg_spike_rate = avg_spike_rate
+  )
+  all_data[[i]] <- session_df
+}
+final_dataset <- bind_rows(all_data)
+final_dataset <- na.omit(final_dataset)  # 去除缺失值
+final_dataset$session_num <- as.factor(final_dataset$session_num)
+final_dataset$mouse_name <- as.factor(final_dataset$mouse_name)
+final_dataset$avg_spike_rate <- log1p(final_dataset$avg_spike_rate)  # log(1 + x) 避免 log(0) 问题
+pca_data <- final_dataset %>%
+  select(avg_spike_rate,contrast_difference,feedback_type)  # 选择数值列
+pca_result <- prcomp(pca_data, center = TRUE, scale. = TRUE)  # 标准化并计算 PCA
+pca_scores <- as.data.frame(pca_result$x)
+final_dataset <- cbind(final_dataset, pca_scores)
+ggplot(final_dataset, aes(x = PC1, y = PC2, color = session_num)) +
+  geom_jitter(width = 0.1, height = 0.1, alpha = 0.6) +  # 加入抖动，防止数据重叠
+  labs(title = "PCA: PC1 vs PC2", color = "session_id") +
+  theme_minimal()
+ggplot(final_dataset, aes(x = PC1, y = PC2, color = mouse_name)) +
+  geom_jitter(width = 0.1, height = 0.1, alpha = 0.6) +  # 加入抖动
+  labs(title = "PCA: PC1 vs PC2", color = "mouse_name") +
+  theme_minimal()
+
+```
+There is some difference between sessions and mouses, but it’s not the primary reason for this differences.
+
+# Section 4 Predictive modeling
+```{r}
+session <- list()
+for(i in 1:18){
+  session[[i]] <- readRDS(paste0("C:/Users/28362/Downloads/sessions/session", i, ".rds"))
+}
+#Trial-Level Decision and Neural Activity Data for Session 18
+n_obs = length(session[[18]]$feedback_type)
+
+  
+# Create a tibble to store trial-level data for the session
+  dat = tibble(
+    feedback_type = as.factor(session[[18]]$feedback_type),
+    decision = rep('name', n_obs),
+    avg_spikes = rep(0, n_obs)
+  )
+  
+# Loop through each trial to compute decision category
+  for (i in 1:n_obs){
+      # decision 
+      if (session[[18]]$contrast_left[i] > session[[18]]$contrast_right[i]){
+        dat$decision[i] = '1' 
+      } else if (session[[18]]$contrast_left[i] < session[[18]]$contrast_right[i]){
+        dat$decision[i] = '2' 
+      } else if (session[[18]]$contrast_left[i] == session[[18]]$contrast_right[i] 
+               & session[[18]]$contrast_left[i] == 0){
+        dat$decision[i] = '3' 
+      } else{
+        dat$decision[i] = '4' 
+    }
+    
+    # avg_spks
+    spks.trial = session[[18]]$spks[[i]]
+    total.spikes = apply(spks.trial, 1, sum)
+    dat$avg_spikes[i] = mean(total.spikes)
+}
+
+dat$decision = as.factor(dat$decision)
+summary(dat)
+```
+
+```{r}
+# Split data into train and test
+set.seed(101)
+sample <- sample.int(n = n_obs, size = floor(.8 * n_obs), replace = F)
+train <- dat[sample, ]
+test  <- dat[-sample, ]
+```
+For simplicity, we fit a logistic regrssion to do the prediction.
+
+```{r}
+fit1 <- glm(feedback_type~., data = train, family="binomial")
+summary(fit1)
+```
+
+```{r}
+#evaluates the logistic regression model.
+pred1 <- predict(fit1, test %>% select(-feedback_type), type = 'response')
+prediction1 <- factor(pred1 > 0.5, labels = c('-1', '1'))
+mean(prediction1 != test$feedback_type)
+```
+The prediction error on the test data set is about 22%.
+
+```{r}
+cm <- confusionMatrix(prediction1, test$feedback_type, dnn = c("Prediction", "Reference"))
+
+plt <- as.data.frame(cm$table)
+
+ggplot(plt, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+```
+In this confusion matrix, there are 9 incorrect success predictions and 1 incorrect failure prediction. This means that the prediction is not doing well because if we just bias to success completely, we get same error rate. It may overestimates success probability and misclassifies a correct trial as incorrect. 
+
+```{r}
+#create a baseline model that always predicts "1" (successful trial) and evaluates its error rate.
+prediction0 = factor(rep('1', nrow(test)), levels = c('1', '-1'))
+mean(prediction0 != test$feedback_type)
+```
+```{r}
+cm <- confusionMatrix(prediction0, test$feedback_type, dnn = c("Prediction", "Reference"))
+
+plt <- as.data.frame(cm$table)
+
+ggplot(plt, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+```
+Since the majority of trials are 1, this simple rule-based model achieves the same accuracy (~77.3%) as logistic regression. This means the logistic regression model did not improve beyond naive guessing.
+
+```{r}
+#This table summarizes the number of recorded neurons per brain area in Session 18.
+table(session[[18]]$brain_area)
+```
+
+```{r}
+#calculates the average spike rate for each brain area in a given trial.
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+}
+```
+
+```{r}
+#neural activity data from different brain areas
+n_area = length(unique(session[[18]]$brain_area))
+spk_area = matrix(rep(0, n_obs * n_area), n_obs, n_area)
+for (i in 1:n_obs){
+    spk_area[i,] = average_spike_area(i, session[[18]])
+}
+
+spk_area = as_tibble(spk_area)
+colnames(spk_area)= unique(session[[18]]$brain_area)
+dat1 = bind_cols(dat, spk_area) %>% select(-avg_spikes)
+head(dat1)
+```
+
+```{r}
+# Split data into train and test
+set.seed(101)
+sample <- sample.int(n = n_obs, size = floor(.8 * n_obs), replace = F)
+train <- dat1[sample, ]
+test  <- dat1[-sample, ]
+```
+
+```{r}
+fit2 <- glm(feedback_type~., data = train, family="binomial")
+summary(fit2)
+```
+This logistic regression model extends the previous model by incorporating brain area-specific spike rates as additional predictors for trial success.
+
+```{r}
+pred2 <- predict(fit2, test %>% select(-feedback_type), type = 'response')
+prediction2 <- factor(pred2 > 0.5, labels = c('-1', '1'))
+mean(prediction2 != test$feedback_type)
+```
+The prediction error on the test data set is about 25%, which is worse than the first model.
+
+```{r}
+cm <- confusionMatrix(prediction2, test$feedback_type, dnn = c("Prediction", "Reference"))
+
+plt <- as.data.frame(cm$table)
+
+ggplot(plt, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+```
+It appears that the model predicts more failures compared to the previous one. However, its performance in predicting failures is not particularly strong.
+
+```{r}
+# Model 1
+pr = prediction(pred1, test$feedback_type)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+
+# Model 2
+pr = prediction(pred2, test$feedback_type)
+prf2 <- performance(pr, measure = "tpr", x.measure = "fpr")
+auc2 <- performance(pr, measure = "auc")
+auc2 <- auc2@y.values[[1]]
+
+# Bias Guess
+pred0 = pred1 * 0 + 1
+pr = prediction(pred0, test$feedback_type)
+prf0 <- performance(pr, measure = "tpr", x.measure = "fpr")
+auc0 <- performance(pr, measure = "auc")
+auc0 <- auc0@y.values[[1]]
+
+plot(prf2, ,col = 'red', main = 'ROC curve')
+plot(prf, add = TRUE, col = 'blue')
+plot(prf0, add = TRUE, col = 'green')
+legend("bottomright", legend=c("Model 1", "Model 2", "Bias Guess"), col=c("blue", "red", 'green'), lty=1:1, 
+       cex=0.8)
+```
+This ROC curve compares two logistic regression models (Model 1 and Model 2) along with a baseline guessing model. From the ROC curve, we see that Mode 1 and Model 2 have similiar performance.
+
+```{r}
+# AUC 
+print(c(auc, auc2, auc0))
+```
+From AUC, 0.656 < 0.694, means that Model 2 is slgithly better than Model 1. The AUC score of baseline = 0.5 means no predictive power.
+
+# Section 5 Prediction performance on the test sets
+```{r}
+library(caret)
+library(randomForest)
+test1 <- readRDS("C:/Users/28362/test1.rds")
+test2 <- readRDS("C:/Users/28362/test2.rds")
+test1$feedback_type <- factor(test1$feedback_type, levels = c("-1", "1"))
+test2$feedback_type <- factor(test2$feedback_type, levels = c("-1", "1"))
+```
+
+```{r}
+test1_df <- data.frame(
+  contrast_left  = test1$contrast_left,
+  contrast_right = test1$contrast_right,
+  feedback_type  = test1$feedback_type
+)
+```
+
+```{r}
+test2_df <- data.frame(
+  contrast_left  = test2$contrast_left,
+  contrast_right = test2$contrast_right,
+  feedback_type  = test2$feedback_type
+)
+```
+
+```{r}
+fit2 <- glm(feedback_type ~ contrast_left + contrast_right, 
+            data = test1_df, 
+            family = "binomial")
+```
+
+```{r}
+pred_probs_test1 <- predict(
+  fit2,
+  newdata = test1_df %>% select(-feedback_type),
+  type = "response"
+)
+pred_class_test1 <- ifelse(pred_probs_test1 > 0.5, "1", "-1")
+pred_class_test1 <- factor(pred_class_test1, levels = c("1","-1"))
+accuracy_test1 <- mean(pred_class_test1 == test1_df$feedback_type)
+print(paste("Accuracy on test1:", accuracy_test1))
+```
+
+```{r}
+cm_test1 <- confusionMatrix(
+  data      = pred_class_test1,
+  reference = test1_df$feedback_type,
+  dnn       = c("Prediction", "Reference")
+)
+print(cm_test1)
+```
+
+```{r}
+df_test1 <- as.data.frame(cm_test1$table)
+plot_test1 <- ggplot(df_test1, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "black") +
+  scale_fill_gradient(low = "white", high = "#009194") +
+  labs(
+    title = "Confusion Matrix: Test1",
+    x = "Reference (Actual)",
+    y = "Prediction"
+  ) +
+  theme_minimal()
+show(plot_test1)
+```
+
+
+```{r}
+pred_probs_test2 <- predict(
+  fit2,
+  newdata = test2_df %>% select(-feedback_type),
+  type = "response"
+)
+pred_class_test2 <- ifelse(pred_probs_test2 > 0.5, "1", "-1")
+pred_class_test2 <- factor(pred_class_test2, levels = c("1","-1"))
+accuracy_test2 <- mean(pred_class_test2 == test2_df$feedback_type)
+print(paste("Accuracy on test2:", accuracy_test2))
+```
+```{r}
+cm_test2 <- confusionMatrix(
+  data      = pred_class_test2,
+  reference = test2_df$feedback_type,
+  dnn       = c("Prediction", "Reference")
+)
+print(cm_test2)
+```
+```{r}
+df_test2 <- as.data.frame(cm_test2$table)
+plot_test2 <- ggplot(df_test2, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "black") +
+  scale_fill_gradient(low = "white", high = "#009194") +
+  labs(
+    title = "Confusion Matrix: Test2",
+    x = "Reference (Actual)",
+    y = "Prediction"
+  ) +
+  theme_minimal()
+show(plot_test2)
+```
+
+
+
+In the confusion matrix for test1, the model never predicts "1"; Similarly, for test2, the “Prediction = 1” row also shows very few or no correct classifications. Both test sets show accuracy Around 72–73%, meaning that roughly 70+% of the labels match the model’s predictions so it’s not beating a naive baseline. These results indicate that the model may not be learning to identify "1" at all—thus it isn’t truly good performance if the "1" class matters.
+
+# Section 6 Discussion and conclusion
+This project has trained a predictive model to classify trial outcomes.
+Through exploratory data analysis, I would know the key structure of the data sets. 
+By doing the data integration, I would have the foundation to do the predictive modeling.
+In the model training part, I choose the second logistic regression model as the test model because of its higher AUC.
+Despite the success, there still are some limitations. I may choose the second logistic regression model as the test model, but it doesn't mean that it is the best fit model. There are maybe some better model out there.
+Overall, this project report is about using neural activity data to predict behavioral outcomes and provides a foundation for future research in neuroscience-driven machine learning.
+
+# Acknowledgement
+In this report, for section3 and section5, I used the code from Chatgpt, and the rest of the code is from TA's project discussion. 
+
